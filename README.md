@@ -74,6 +74,27 @@ Build with MySQL authenticator support:
 docker build --build-arg ENABLE_MYSQL=ON -t trojan:mysql .
 ```
 
+## Linux Release Package
+
+Build a Linux amd64 release tarball with Docker:
+
+```bash
+VERSION=1.16.0-aegis.1 scripts/release-linux-amd64.sh
+```
+
+The script creates:
+
+- `dist/trojan-<version>-linux-amd64.tar.xz`
+- `dist/trojan-<version>-linux-amd64.tar.xz.sha224`
+
+Optional build settings:
+
+```bash
+ENABLE_MYSQL=ON VERSION=1.16.0-aegis.1 scripts/release-linux-amd64.sh
+SIGN=1 VERSION=1.16.0-aegis.1 scripts/release-linux-amd64.sh
+ALPINE_VERSION=3.23 VERSION=1.16.0-aegis.1 scripts/release-linux-amd64.sh
+```
+
 ## License
 
 [GPLv3](LICENSE)
