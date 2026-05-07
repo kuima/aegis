@@ -23,6 +23,8 @@ In this page, we will look at the config file of trojan. Trojan uses [`JSON`](ht
         "cert": "",
         "cipher": "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-SHA:ECDHE-ECDSA-AES128-SHA:ECDHE-RSA-AES128-SHA:ECDHE-RSA-AES256-SHA:DHE-RSA-AES128-SHA:DHE-RSA-AES256-SHA:AES128-SHA:AES256-SHA:DES-CBC3-SHA",
         "cipher_tls13": "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
+        "min_version": "TLSv1.2",
+        "max_version": "",
         "sni": "",
         "alpn": [
             "h2",
@@ -55,6 +57,8 @@ In this page, we will look at the config file of trojan. Trojan uses [`JSON`](ht
     - `cert`: if `verify` is set to `true`, the same certificate used by the server or a collection of `CA` certificates could be provided. If you leave this field blank, `OpenSSL` will try to look for a system `CA` store and will be likely to fail. Certificates can be retrieved with [this simple Python script](https://github.com/trojan-gfw/trojan/blob/master/scripts/getcert.py).
     - `cipher`: a cipher list to send and use
     - `cipher_tls13`: a cipher list for TLS 1.3 to use
+    - `min_version`: minimum TLS version to use (`TLSv1`, `TLSv1.1`, `TLSv1.2`, or `TLSv1.3`; defaults to `TLSv1.2`)
+    - `max_version`: maximum TLS version to use, or blank to leave it unrestricted
     - `sni`: the Server Name Indication field in the `SSL` handshake. If left blank, it will be set to `remote_addr`.
     - `alpn`: a list of `ALPN` protocols to send
     - `reuse_session`: whether to reuse `SSL` session
@@ -172,6 +176,8 @@ The NAT config is for transparent proxy. You'll need to [setup iptables rules](h
         "key_password": "",
         "cipher": "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384",
         "cipher_tls13": "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384",
+        "min_version": "TLSv1.2",
+        "max_version": "",
         "prefer_server_cipher": true,
         "alpn": [
             "http/1.1"
@@ -221,6 +227,8 @@ The NAT config is for transparent proxy. You'll need to [setup iptables rules](h
     - `key_password`: password of the private key file
     - `cipher`: a cipher list to use
     - `cipher_tls13`: a cipher list for TLS 1.3 to use
+    - `min_version`: minimum TLS version to use (`TLSv1`, `TLSv1.1`, `TLSv1.2`, or `TLSv1.3`; defaults to `TLSv1.2`)
+    - `max_version`: maximum TLS version to use, or blank to leave it unrestricted
     - `prefer_server_cipher`: whether to prefer server cipher list in a connection
     - `alpn`: a list of `ALPN` protocols to reply
     - `alpn_port_override`: overrides the remote port to the specified value if an `ALPN` is matched. Useful for running NGINX with HTTP/1.1 and HTTP/2 Cleartext on different ports.

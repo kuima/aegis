@@ -21,8 +21,10 @@
 #define _SERVERSESSION_H_
 
 #include "session.h"
+#include <vector>
 #include <boost/asio/ssl.hpp>
 #include "core/authenticator.h"
+#include "proto/trojanrequest.h"
 
 class ServerSession : public Session {
 private:
@@ -35,10 +37,20 @@ private:
     boost::asio::ssl::stream<boost::asio::ip::tcp::socket>in_socket;
     boost::asio::ip::tcp::socket out_socket;
     boost::asio::ip::udp::resolver udp_resolver;
+    boost::asio::steady_timer operation_timer;
     Authenticator *auth;
     std::string auth_password;
     const std::string &plain_http_response;
+    std::string handshake_buf;
+    enum RequestState {
+        REQUEST_COMPLETE,
+        REQUEST_INCOMPLETE,
+        REQUEST_INVALID
+    };
     void destroy();
+    void arm_timer(int seconds, const std::string &message);
+    void cancel_timer();
+    RequestState inspect_trojan_request(const std::string &data, TrojanRequest &req);
     void in_async_read();
     void in_async_write(const std::string &data);
     void in_recv(const std::string &data);
@@ -47,6 +59,7 @@ private:
     void out_async_write(const std::string &data);
     void out_recv(const std::string &data);
     void out_sent();
+    void start_outbound_connect(const std::shared_ptr<std::vector<boost::asio::ip::tcp::endpoint> > &endpoints, size_t index, const std::string &query_addr, const std::string &query_port);
     void udp_async_read();
     void udp_async_write(const std::string &data, const boost::asio::ip::udp::endpoint &endpoint);
     void udp_recv(const std::string &data, const boost::asio::ip::udp::endpoint &endpoint);

@@ -51,6 +51,8 @@ public:
         std::string key_password;
         std::string cipher;
         std::string cipher_tls13;
+        std::string min_version;
+        std::string max_version;
         bool prefer_server_cipher;
         std::string sni;
         std::string alpn;

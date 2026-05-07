@@ -1,21 +1,25 @@
-FROM alpine:3.11
+FROM alpine:3.23 AS build
 
-COPY . trojan
+WORKDIR /src
+COPY . .
 RUN apk add --no-cache --virtual .build-deps \
         build-base \
         cmake \
         boost-dev \
         openssl-dev \
-        mariadb-connector-c-dev \
-    && (cd trojan && cmake . && make -j $(nproc) && strip -s trojan \
-    && mv trojan /usr/local/bin) \
-    && rm -rf trojan \
-    && apk del .build-deps \
-    && apk add --no-cache --virtual .trojan-rundeps \
+    && cmake -S . -B /build -DENABLE_MYSQL=OFF \
+    && cmake --build /build -j $(nproc) \
+    && strip -s /build/trojan
+
+FROM alpine:3.23
+
+RUN apk add --no-cache \
         libstdc++ \
-        boost-system \
         boost-program_options \
-        mariadb-connector-c
+        libssl3 \
+        libcrypto3
+
+COPY --from=build /build/trojan /usr/local/bin/trojan
 
 WORKDIR /config
 CMD ["trojan", "config.json"]

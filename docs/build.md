@@ -6,12 +6,12 @@ We'll only cover the build process on Linux since we will be providing Windows a
 
 Install these dependencies before you build (note that the test has some [additional dependencies](https://github.com/trojan-gfw/trojan/blob/master/tests/LinuxSmokeTest/README.md)):
 
-- [CMake](https://cmake.org/) >= 3.7.2
-- [Boost](http://www.boost.org/) >= 1.66.0
-- [OpenSSL](https://www.openssl.org/) >= 1.1.0
-- [libmysqlclient](https://dev.mysql.com/downloads/connector/c/)
+- [CMake](https://cmake.org/) >= 3.16
+- [Boost](http://www.boost.org/) >= 1.74.0
+- [OpenSSL](https://www.openssl.org/) >= 1.1.1
+- [libmysqlclient](https://dev.mysql.com/downloads/connector/c/) (optional, only when building with MySQL support)
 
-For Debian users, run `sudo apt -y install build-essential cmake libboost-system-dev libboost-program-options-dev libssl-dev default-libmysqlclient-dev` to install all the necessary dependencies.
+For Debian users, run `sudo apt -y install build-essential cmake libboost-dev libboost-program-options-dev libssl-dev` to install the core dependencies. Add `default-libmysqlclient-dev` if you build with `-DENABLE_MYSQL=ON`.
 
 ## Clone
 
@@ -43,8 +43,8 @@ The `cmake ..` command can be extended with the following options:
 
 - `-DDEFAULT_CONFIG=/path/to/default/config.json`: the default path trojan will look for config (defaults to `${CMAKE_INSTALL_FULL_SYSCONFDIR}/trojan/config.json`).
 - `ENABLE_MYSQL`
-    - `-DENABLE_MYSQL=ON`: build with MySQL support (default).
-    - `-DENABLE_MYSQL=OFF`: build without MySQL support.
+    - `-DENABLE_MYSQL=ON`: build with MySQL support.
+    - `-DENABLE_MYSQL=OFF`: build without MySQL support (default).
 - `ENABLE_NAT` (Only on Linux)
     - `-DENABLE_NAT=ON`: build with NAT support (default).
     - `-DENABLE_NAT=OFF`: build without NAT support.

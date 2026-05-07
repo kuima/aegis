@@ -20,9 +20,25 @@
 #include "serversession.h"
 #include "proto/trojanrequest.h"
 #include "proto/udppacket.h"
+#include <cctype>
 using namespace std;
 using namespace boost::asio::ip;
 using namespace boost::asio::ssl;
+
+namespace {
+constexpr int TLS_HANDSHAKE_TIMEOUT = 10;
+constexpr int TROJAN_REQUEST_TIMEOUT = 10;
+constexpr int OUTBOUND_CONNECT_TIMEOUT = 30;
+
+bool is_hex_prefix(const string &data, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        if (!isxdigit(static_cast<unsigned char>(data[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+}
 
 ServerSession::ServerSession(const Config &config, boost::asio::io_context &io_context, context &ssl_context, Authenticator *auth, const string &plain_http_response) :
     Session(config, io_context),
@@ -30,6 +46,7 @@ ServerSession::ServerSession(const Config &config, boost::asio::io_context &io_c
     in_socket(io_context, ssl_context),
     out_socket(io_context),
     udp_resolver(io_context),
+    operation_timer(io_context),
     auth(auth),
     plain_http_response(plain_http_response) {}
 
@@ -46,8 +63,10 @@ void ServerSession::start() {
         return;
     }
     auto self = shared_from_this();
+    arm_timer(TLS_HANDSHAKE_TIMEOUT, "TLS handshake timed out");
     in_socket.async_handshake(stream_base::server, [this, self](const boost::system::error_code error) {
         if (error) {
+            cancel_timer();
             Log::log_with_endpoint(in_endpoint, "SSL handshake failed: " + error.message(), Log::ERROR);
             if (error.message() == "http request" && !plain_http_response.empty()) {
                 recv_len += plain_http_response.length();
@@ -59,8 +78,92 @@ void ServerSession::start() {
             destroy();
             return;
         }
+        arm_timer(TROJAN_REQUEST_TIMEOUT, "Trojan request timed out");
         in_async_read();
     });
+}
+
+void ServerSession::arm_timer(int seconds, const string &message) {
+    operation_timer.expires_after(chrono::seconds(seconds));
+    auto self = shared_from_this();
+    operation_timer.async_wait([this, self, message](const boost::system::error_code error) {
+        if (error == boost::asio::error::operation_aborted || status == DESTROY) {
+            return;
+        }
+        Log::log_with_endpoint(in_endpoint, message, Log::WARN);
+        destroy();
+    });
+}
+
+void ServerSession::cancel_timer() {
+    operation_timer.cancel();
+}
+
+ServerSession::RequestState ServerSession::inspect_trojan_request(const string &data, TrojanRequest &req) {
+    constexpr size_t PASSWORD_LENGTH = 56;
+    constexpr size_t PASSWORD_CRLF_LENGTH = PASSWORD_LENGTH + 2;
+
+    if (data.size() < PASSWORD_LENGTH) {
+        return is_hex_prefix(data, data.size()) ? REQUEST_INCOMPLETE : REQUEST_INVALID;
+    }
+    if (!is_hex_prefix(data, PASSWORD_LENGTH)) {
+        return REQUEST_INVALID;
+    }
+    if (data.size() == PASSWORD_LENGTH) {
+        return REQUEST_INCOMPLETE;
+    }
+    if (data[PASSWORD_LENGTH] != '\r') {
+        return REQUEST_INVALID;
+    }
+    if (data.size() == PASSWORD_LENGTH + 1) {
+        return REQUEST_INCOMPLETE;
+    }
+    if (data[PASSWORD_LENGTH + 1] != '\n') {
+        return REQUEST_INVALID;
+    }
+    if (data.size() == PASSWORD_CRLF_LENGTH) {
+        return REQUEST_INCOMPLETE;
+    }
+    unsigned char command = data[PASSWORD_CRLF_LENGTH];
+    if (command != TrojanRequest::CONNECT && command != TrojanRequest::UDP_ASSOCIATE) {
+        return REQUEST_INVALID;
+    }
+    if (data.size() == PASSWORD_CRLF_LENGTH + 1) {
+        return REQUEST_INCOMPLETE;
+    }
+
+    size_t address_len = 0;
+    unsigned char address_type = data[PASSWORD_CRLF_LENGTH + 1];
+    switch (address_type) {
+        case SOCKS5Address::IPv4:
+            address_len = 1 + 4 + 2;
+            break;
+        case SOCKS5Address::DOMAINNAME: {
+            if (data.size() == PASSWORD_CRLF_LENGTH + 2) {
+                return REQUEST_INCOMPLETE;
+            }
+            unsigned char domain_len = data[PASSWORD_CRLF_LENGTH + 2];
+            if (domain_len == 0) {
+                return REQUEST_INVALID;
+            }
+            address_len = 1 + 1 + domain_len + 2;
+            break;
+        }
+        case SOCKS5Address::IPv6:
+            address_len = 1 + 16 + 2;
+            break;
+        default:
+            return REQUEST_INVALID;
+    }
+
+    size_t request_crlf = PASSWORD_CRLF_LENGTH + 1 + address_len;
+    if (data.size() < request_crlf + 2) {
+        return REQUEST_INCOMPLETE;
+    }
+    if (data.compare(request_crlf, 2, "\r\n") != 0) {
+        return REQUEST_INVALID;
+    }
+    return req.parse(data) == -1 ? REQUEST_INVALID : REQUEST_COMPLETE;
 }
 
 void ServerSession::in_async_read() {
@@ -134,8 +237,20 @@ void ServerSession::udp_async_write(const string &data, const udp::endpoint &end
 
 void ServerSession::in_recv(const string &data) {
     if (status == HANDSHAKE) {
+        handshake_buf += data;
         TrojanRequest req;
-        bool valid = req.parse(data) != -1;
+        RequestState request_state = inspect_trojan_request(handshake_buf, req);
+        if (request_state == REQUEST_INCOMPLETE) {
+            if (handshake_buf.length() > MAX_LENGTH) {
+                Log::log_with_endpoint(in_endpoint, "Trojan request header too long", Log::ERROR);
+                destroy();
+                return;
+            }
+            in_async_read();
+            return;
+        }
+        cancel_timer();
+        bool valid = request_state == REQUEST_COMPLETE;
         if (valid) {
             auto password_iterator = config.password.find(req.password);
             if (password_iterator == config.password.end()) {
@@ -179,61 +294,39 @@ void ServerSession::in_recv(const string &data) {
             }
         } else {
             Log::log_with_endpoint(in_endpoint, "not trojan request, connecting to " + query_addr + ':' + query_port, Log::WARN);
-            out_write_buf = data;
+            out_write_buf = handshake_buf;
         }
         sent_len += out_write_buf.length();
         auto self = shared_from_this();
+        arm_timer(OUTBOUND_CONNECT_TIMEOUT, "outbound connection timed out");
         resolver.async_resolve(query_addr, query_port, [this, self, query_addr, query_port](const boost::system::error_code error, const tcp::resolver::results_type& results) {
+            if (status == DESTROY) {
+                return;
+            }
             if (error || results.empty()) {
+                cancel_timer();
                 Log::log_with_endpoint(in_endpoint, "cannot resolve remote server hostname " + query_addr + ": " + error.message(), Log::ERROR);
                 destroy();
                 return;
             }
-            auto iterator = results.begin();
-            if (config.tcp.prefer_ipv4) {
-                for (auto it = results.begin(); it != results.end(); ++it) {
-                    const auto &addr = it->endpoint().address();
-                    if (addr.is_v4()) {
-                        iterator = it;
-                        break;
+            auto endpoints = make_shared<vector<tcp::endpoint> >();
+            if (!config.tcp.prefer_ipv4) {
+                for (const auto &result: results) {
+                    endpoints->push_back(result.endpoint());
+                }
+            } else {
+                for (const auto &result: results) {
+                    if (result.endpoint().address().is_v4()) {
+                        endpoints->push_back(result.endpoint());
+                    }
+                }
+                for (const auto &result: results) {
+                    if (!result.endpoint().address().is_v4()) {
+                        endpoints->push_back(result.endpoint());
                     }
                 }
             }
-            Log::log_with_endpoint(in_endpoint, query_addr + " is resolved to " + iterator->endpoint().address().to_string(), Log::ALL);
-            boost::system::error_code ec;
-            out_socket.open(iterator->endpoint().protocol(), ec);
-            if (ec) {
-                destroy();
-                return;
-            }
-            if (config.tcp.no_delay) {
-                out_socket.set_option(tcp::no_delay(true));
-            }
-            if (config.tcp.keep_alive) {
-                out_socket.set_option(boost::asio::socket_base::keep_alive(true));
-            }
-#ifdef TCP_FASTOPEN_CONNECT
-            if (config.tcp.fast_open) {
-                using fastopen_connect = boost::asio::detail::socket_option::boolean<IPPROTO_TCP, TCP_FASTOPEN_CONNECT>;
-                boost::system::error_code ec;
-                out_socket.set_option(fastopen_connect(true), ec);
-            }
-#endif // TCP_FASTOPEN_CONNECT
-            out_socket.async_connect(*iterator, [this, self, query_addr, query_port](const boost::system::error_code error) {
-                if (error) {
-                    Log::log_with_endpoint(in_endpoint, "cannot establish connection to remote server " + query_addr + ':' + query_port + ": " + error.message(), Log::ERROR);
-                    destroy();
-                    return;
-                }
-                Log::log_with_endpoint(in_endpoint, "tunnel established");
-                status = FORWARD;
-                out_async_read();
-                if (!out_write_buf.empty()) {
-                    out_async_write(out_write_buf);
-                } else {
-                    in_async_read();
-                }
-            });
+            start_outbound_connect(endpoints, 0, query_addr, query_port);
         });
     } else if (status == FORWARD) {
         sent_len += data.length();
@@ -263,6 +356,61 @@ void ServerSession::out_sent() {
     if (status == FORWARD) {
         in_async_read();
     }
+}
+
+void ServerSession::start_outbound_connect(const shared_ptr<vector<tcp::endpoint> > &endpoints, size_t index, const string &query_addr, const string &query_port) {
+    if (status == DESTROY) {
+        return;
+    }
+    if (index >= endpoints->size()) {
+        cancel_timer();
+        Log::log_with_endpoint(in_endpoint, "cannot establish connection to remote server " + query_addr + ':' + query_port, Log::ERROR);
+        destroy();
+        return;
+    }
+    const auto endpoint = (*endpoints)[index];
+    Log::log_with_endpoint(in_endpoint, query_addr + " is resolved to " + endpoint.address().to_string(), Log::ALL);
+    boost::system::error_code ec;
+    if (out_socket.is_open()) {
+        out_socket.close(ec);
+    }
+    out_socket.open(endpoint.protocol(), ec);
+    if (ec) {
+        start_outbound_connect(endpoints, index + 1, query_addr, query_port);
+        return;
+    }
+    if (config.tcp.no_delay) {
+        out_socket.set_option(tcp::no_delay(true), ec);
+    }
+    if (config.tcp.keep_alive) {
+        out_socket.set_option(boost::asio::socket_base::keep_alive(true), ec);
+    }
+#ifdef TCP_FASTOPEN_CONNECT
+    if (config.tcp.fast_open) {
+        using fastopen_connect = boost::asio::detail::socket_option::boolean<IPPROTO_TCP, TCP_FASTOPEN_CONNECT>;
+        out_socket.set_option(fastopen_connect(true), ec);
+    }
+#endif // TCP_FASTOPEN_CONNECT
+    auto self = shared_from_this();
+    out_socket.async_connect(endpoint, [this, self, endpoints, index, query_addr, query_port](const boost::system::error_code error) {
+        if (status == DESTROY) {
+            return;
+        }
+        if (error) {
+            Log::log_with_endpoint(in_endpoint, "cannot connect to " + endpoints->at(index).address().to_string() + ':' + to_string(endpoints->at(index).port()) + ": " + error.message(), Log::ALL);
+            start_outbound_connect(endpoints, index + 1, query_addr, query_port);
+            return;
+        }
+        cancel_timer();
+        Log::log_with_endpoint(in_endpoint, "tunnel established");
+        status = FORWARD;
+        out_async_read();
+        if (!out_write_buf.empty()) {
+            out_async_write(out_write_buf);
+        } else {
+            in_async_read();
+        }
+    });
 }
 
 void ServerSession::udp_recv(const string &data, const udp::endpoint &endpoint) {
@@ -336,6 +484,7 @@ void ServerSession::destroy() {
         auth->record(auth_password, recv_len, sent_len);
     }
     boost::system::error_code ec;
+    operation_timer.cancel();
     resolver.cancel();
     udp_resolver.cancel();
     if (out_socket.is_open()) {

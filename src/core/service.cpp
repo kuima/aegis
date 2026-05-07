@@ -29,6 +29,7 @@
 #ifdef __APPLE__
 #include <Security/Security.h>
 #endif // __APPLE__
+#include <openssl/ssl.h>
 #include <openssl/opensslv.h>
 #include "session/serversession.h"
 #include "session/clientsession.h"
@@ -43,6 +44,33 @@ using namespace boost::asio::ssl;
 #ifdef ENABLE_REUSE_PORT
 typedef boost::asio::detail::socket_option::boolean<SOL_SOCKET, SO_REUSEPORT> reuse_port;
 #endif // ENABLE_REUSE_PORT
+
+namespace {
+int parse_tls_version(const string &version, const string &field) {
+    if (version.empty()) {
+        return 0;
+    }
+    if (version == "TLSv1" || version == "TLSv1.0") {
+        return TLS1_VERSION;
+    }
+#ifdef TLS1_1_VERSION
+    if (version == "TLSv1.1") {
+        return TLS1_1_VERSION;
+    }
+#endif // TLS1_1_VERSION
+#ifdef TLS1_2_VERSION
+    if (version == "TLSv1.2") {
+        return TLS1_2_VERSION;
+    }
+#endif // TLS1_2_VERSION
+#ifdef TLS1_3_VERSION
+    if (version == "TLSv1.3") {
+        return TLS1_3_VERSION;
+    }
+#endif // TLS1_3_VERSION
+    throw runtime_error("unsupported " + field + ": " + version);
+}
+}
 
 Service::Service(Config &config, bool test) :
     config(config),
@@ -80,6 +108,14 @@ Service::Service(Config &config, bool test) :
     Log::level = config.log_level;
     auto native_context = ssl_context.native_handle();
     ssl_context.set_options(context::default_workarounds | context::no_sslv2 | context::no_sslv3 | context::single_dh_use);
+    int min_tls_version = parse_tls_version(config.ssl.min_version, "ssl.min_version");
+    if (min_tls_version != 0 && !SSL_CTX_set_min_proto_version(native_context, min_tls_version)) {
+        throw runtime_error("could not set ssl.min_version: " + config.ssl.min_version);
+    }
+    int max_tls_version = parse_tls_version(config.ssl.max_version, "ssl.max_version");
+    if (max_tls_version != 0 && !SSL_CTX_set_max_proto_version(native_context, max_tls_version)) {
+        throw runtime_error("could not set ssl.max_version: " + config.ssl.max_version);
+    }
     if (!config.ssl.curves.empty()) {
         SSL_CTX_set1_curves_list(native_context, config.ssl.curves.c_str());
     }
